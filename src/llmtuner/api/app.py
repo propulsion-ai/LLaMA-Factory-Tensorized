@@ -63,12 +63,16 @@ def create_app(chat_model: "ChatModel") -> "FastAPI":
         allow_headers=["*"],
     )
 
-    @app.get("/v1/models", response_model=ModelList)
+    @app.get("/health")
+    async def healthcheck():
+        return {"status": "ok"}
+
+    @app.get("/models", response_model=ModelList)
     async def list_models():
-        model_card = ModelCard(id="gpt-3.5-turbo")
+        model_card = ModelCard(id="p8n-llm")
         return ModelList(data=[model_card])
 
-    @app.post("/v1/chat/completions", response_model=ChatCompletionResponse, status_code=status.HTTP_200_OK)
+    @app.post("/predict", response_model=ChatCompletionResponse, status_code=status.HTTP_200_OK)
     async def create_chat_completion(request: ChatCompletionRequest):
         if not chat_model.can_generate:
             raise HTTPException(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail="Not allowed")
@@ -161,7 +165,7 @@ def create_app(chat_model: "ChatModel") -> "FastAPI":
         yield to_json(chunk)
         yield "[DONE]"
 
-    @app.post("/v1/score/evaluation", response_model=ScoreEvaluationResponse, status_code=status.HTTP_200_OK)
+    @app.post("/score/evaluation", response_model=ScoreEvaluationResponse, status_code=status.HTTP_200_OK)
     async def create_score_evaluation(request: ScoreEvaluationRequest):
         if chat_model.can_generate:
             raise HTTPException(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail="Not allowed")
@@ -178,4 +182,4 @@ def create_app(chat_model: "ChatModel") -> "FastAPI":
 if __name__ == "__main__":
     chat_model = ChatModel()
     app = create_app(chat_model)
-    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)
+    uvicorn.run(app, host="0.0.0.0", port=8080, workers=1)

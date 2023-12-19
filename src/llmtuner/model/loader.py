@@ -1,8 +1,15 @@
+import os
+import time
+from pathlib import Path
+
 from typing import TYPE_CHECKING, Optional, Tuple
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.integrations import is_deepspeed_zero3_enabled
 from transformers.utils.versions import require_version
 from trl import AutoModelForCausalLMWithValueHead
+
+from tensorizer import TensorDeserializer
+from tensorizer.utils import no_init_or_tensor, convert_bytes, get_mem_usage
 
 import llmtuner.model.patcher as patcher
 from llmtuner.extras.logging import get_logger
@@ -16,9 +23,7 @@ if TYPE_CHECKING:
     from transformers import PreTrainedModel, PreTrainedTokenizer
     from llmtuner.hparams import ModelArguments, FinetuningArguments
 
-
 logger = get_logger(__name__)
-
 
 require_version("transformers>=4.36.1", "To fix: pip install transformers>=4.36.1")
 require_version("datasets>=2.14.3", "To fix: pip install datasets>=2.14.3")
@@ -48,6 +53,10 @@ def load_model_and_tokenizer(
         "token": model_args.hf_hub_token
     }
 
+    model_path = Path(model_args.model_name_or_path)
+    file_name = model_path.name
+    model_args.model_name_or_path = str(model_path.parent)
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         use_fast=model_args.use_fast_tokenizer,
@@ -64,13 +73,35 @@ def load_model_and_tokenizer(
     patcher.configure_longlora(config, model_args, is_trainable)
     patcher.configure_quantization(config, config_kwargs, tokenizer, model_args, finetuning_args)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
-        torch_dtype=model_args.compute_dtype,
-        low_cpu_mem_usage=(not is_deepspeed_zero3_enabled()),
-        **config_kwargs
-    )
+    if file_name.endswith(".tensors"):
+        # Load model from tensors
+        before_mem = get_mem_usage()
+        start = time.time()
+        model = no_init_or_tensor(
+            lambda: AutoModelForCausalLM.from_config(config)
+        )
+        des = TensorDeserializer(os.path.join(model_args.model_name_or_path, file_name), plaid_mode=True)
+        des.load_into_module(model)
+        end = time.time()
+
+        # Brag about how fast we are.
+        total_bytes_str = convert_bytes(des.total_tensor_bytes)
+        duration = end - start
+        per_second = convert_bytes(des.total_tensor_bytes / duration)
+        after_mem = get_mem_usage()
+        des.close()
+        print(f"Deserialized {total_bytes_str} in {end - start:0.2f}s, {per_second}/s")
+        print(f"Memory usage before: {before_mem}")
+        print(f"Memory usage after: {after_mem}")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            config=config,
+            torch_dtype=model_args.compute_dtype,
+            low_cpu_mem_usage=(not is_deepspeed_zero3_enabled()),
+            **config_kwargs
+        )
+
     patcher.patch_model(model)
     register_autoclass(config, model, tokenizer)
     if not is_deepspeed_zero3_enabled():
